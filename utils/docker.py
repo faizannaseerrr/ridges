@@ -1,5 +1,6 @@
 import docker
 import subprocess
+import concurrent.futures
 import utils.logger as logger
 
 
@@ -71,16 +72,24 @@ def get_num_docker_containers() -> int:
 # TODO ADAM: optimize
 def stop_and_delete_all_docker_containers() -> None:
     """
-    Stops and deletes all Docker containers.
+    Stops and deletes all Docker containers concurrently.
     """
 
     docker_client = get_docker_client()
     
     logger.info("Stopping and deleting all containers...")
     
-    for container in docker_client.containers.list(all=True):
+    containers = docker_client.containers.list(all=True)
+    
+    if not containers:
+        logger.info("No containers found to stop and delete")
+        docker_client.containers.prune()
+        logger.info("Stopped and deleted all containers")
+        return
+    
+    def process_container(container):
         logger.info(f"Stopping and deleting container {container.name}...")
-
+        
         try:
             container.stop(timeout=3)
         except Exception as e:
@@ -90,8 +99,21 @@ def stop_and_delete_all_docker_containers() -> None:
             container.remove(force=True)
         except Exception as e:
             logger.warning(f"Could not remove container {container.name}: {e}")
-
+        
         logger.info(f"Stopped and deleted container {container.name}")
+    
+    # Process containers concurrently with ThreadPoolExecutor
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        # Submit all container processing tasks
+        future_to_container = {executor.submit(process_container, container): container for container in containers}
+        
+        # Wait for all tasks to complete and handle any exceptions
+        for future in concurrent.futures.as_completed(future_to_container):
+            container = future_to_container[future]
+            try:
+                future.result()  # This will raise any exception that occurred in the thread
+            except Exception as e:
+                logger.error(f"Unexpected error processing container {container.name}: {e}")
 
     docker_client.containers.prune()
     
